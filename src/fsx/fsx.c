@@ -42,6 +42,8 @@
  *  
  *	Added no-cached r/w option May 2008 -- rtucker@apple.com, bsuinn@apple.com 
  *
+ *	Added punch-hole option (-H).
+ *
  * Compile with:
  	cc -Wall -O3 fsx.c -o fsx
  	gcc -arch ppc -arch i386 -arch ppc64 -arch x86_64 -Wall -O3 fsx.c -o fsx -DXILOG -F/AppleInternal/Library/Frameworks -framework XILog
@@ -61,6 +63,11 @@
 #endif
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
+#ifdef __linux__
+# include <sys/vfs.h>
+# include <linux/falloc.h>
+#endif
 #ifndef MAP_FILE
 # define MAP_FILE 0
 #endif
@@ -106,6 +113,7 @@ int			logcount = 0;	/* total ops */
 #define OP_SKIPPED	7
 #define OP_NOCACHEREAD	8
 #define OP_NOCACHEWRITE 9
+#define OP_PUNCHHOLE	10
 
 int page_size;
 int page_mask;
@@ -162,11 +170,14 @@ unsigned int pinginterval = 10000; // About every 30sec?
 XILogRef xilogref;
 #endif
 int	gUseRandomNoCache = 0; /* -C randomly mix cached and un-cached r/w ops */
+int	punchholes = 0;		/* -H flag */
+int	punchbdy = 0;		/* fs block size, set once the file is open */
 
 char *msgbuf;
 int msgbuflen;
 
 void dotruncate(unsigned size);
+void dopunchhole(unsigned offset, unsigned size);
 void writefileimage(void);
 
 #define get_data_at(cp) \
@@ -368,6 +379,7 @@ offset_last_mod(int offset, int *write, int *tdown, int *tup)
 		switch (operation) {
 		case OP_MAPWRITE:
 		case OP_WRITE:
+		case OP_PUNCHHOLE:
 			if (*write != -1)
 				break;
 			if ((offset >= lp->args[0]) && (offset < (lp->args[0] + lp->args[1])))
@@ -483,6 +495,16 @@ logentrydump(int logent, int opnum)
 		    (badoff < (lp->args[0] + lp->args[1])))
 		{
 			prt("\t***WWWW");
+		}
+		break;
+	case OP_PUNCHHOLE:
+		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)", "PUNCH HOLE",
+		    lp->args[0], lp->args[0],
+		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
+		    lp->args[1], lp->args[1]);
+		if ((badoff >= lp->args[0]) && (badoff < lp->args[0] + lp->args[1]))
+		{
+			prt("\t***PPPP");
 		}
 		break;
 	case OP_TRUNCATE:
@@ -1193,6 +1215,67 @@ dotruncate(unsigned size)
 
 
 void
+dopunchhole(unsigned offset, unsigned size)
+{
+	off_t start, end;
+	int logent;
+
+	/* only whole fs blocks: round the start up and the end down */
+	start = ((off_t)offset + punchbdy - 1) / punchbdy * punchbdy;
+	end = ((off_t)offset + size) / punchbdy * punchbdy;
+	if (end > file_size)
+		end = file_size / punchbdy * punchbdy;
+	if (end <= start) {
+		if (debug && testcalls > simulatedopcount)
+		{
+			prt("skipping zero size punch hole\n");
+		}
+		log4(OP_SKIPPED, OP_PUNCHHOLE, offset, size);
+		return;
+	}
+
+	logent = log4(OP_PUNCHHOLE, (unsigned)start, (unsigned)(end - start), (unsigned)file_size);
+
+	memset(good_buf + start, '\0', end - start);
+
+	if (SHOWLOGENTRY(start, end))
+	{
+		logentrydump(logent, logcount);
+	}
+
+	if (testcalls <= simulatedopcount)
+		return;
+
+	if (interactive) {
+		printf("Hit return when ready...");
+		getchar();
+	}
+
+#if defined(F_PUNCHHOLE)
+	{
+		struct fpunchhole fp;
+		bzero(&fp, sizeof(fp));
+		fp.fp_offset = start;
+		fp.fp_length = end - start;
+		if (fcntl(fd, F_PUNCHHOLE, &fp) == -1) {
+			logdump();
+			prt("punchhole: 0x%llx thru 0x%llx\n", (unsigned long long)start, (unsigned long long)end);
+			prterr("dopunchhole: fcntl(F_PUNCHHOLE)");
+			failure(190);
+		}
+	}
+#elif defined(FALLOC_FL_PUNCH_HOLE)
+	if (fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, start, end - start) == -1) {
+		logdump();
+		prt("punchhole: 0x%llx thru 0x%llx\n", (unsigned long long)start, (unsigned long long)end);
+		prterr("dopunchhole: fallocate(PUNCH_HOLE)");
+		failure(190);
+	}
+#endif
+}
+
+
+void
 writefileimage(void)
 {
 	ssize_t iret;
@@ -1290,6 +1373,13 @@ test(void)
 	 * TRUNCATE:	op = 3
 	 * MAPWRITE:    op = 3 or 4
 	 */
+	if (punchholes && file_size && random() % 8 == 0) {
+		offset = random() % file_size;
+		size = random() % (maxoplen+1);
+		dopunchhole(offset, size);
+		goto done;
+	}
+
 	if (lite ? 0 : op == 3 && style == 0 && ea == 0) /* vanilla truncate? */
 		dotruncate(((random() + datasize - 1) & ~(datasize - 1)) % maxfilelen);
 	else {
@@ -1329,6 +1419,7 @@ test(void)
 			}
 		}
 	}
+done:
 	if (sizechecks && testcalls > simulatedopcount)
 		check_size();
 	if (closeopen)
@@ -1357,7 +1448,7 @@ void
 usage(void)
 {
 	fprintf(stdout, "usage: %s",
-		"fsx [-ehinqvxCLMORW] [-b opnum] [-c Prob] [-d duration] [-f forkname] [-l logpath] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-F flen] [-G logsize] [-I opnum] [-N numops] [-P dirpath] [-S seed] [-T datasize] fname [xxxxx]\n\
+		"fsx [-ehinqvxCHLMORW] [-b opnum] [-c Prob] [-d duration] [-f forkname] [-l logpath] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-F flen] [-G logsize] [-I opnum] [-N numops] [-P dirpath] [-S seed] [-T datasize] fname [xxxxx]\n\
 	-b opnum: beginning operation number (default 1)\n\
 	-c P: 1 in P chance of file close+open at each op (default infinity)\n\
 	-d duration: number of hours for the tool to run\n\
@@ -1383,6 +1474,7 @@ usage(void)
 	-D startingop: debug output starting at specified operation\n\
 	-G logsize: #entries in oplog (default 1024)\n\
 	-F flen: the upper bound on file size (default 262144)\n\
+	-H: punch holes (deallocate random block-aligned ranges)\n\
 	-I: start interactive mode since operation opnum\n\
 	-L: fsxLite - no file creations & no file size changes\n\
 	-M: slow motion mode, wait 1 second before each op\n\
@@ -1454,7 +1546,7 @@ main(int argc, char **argv)
 
 	setvbuf(stdout, (char *)0, _IOLBF, 0); /* line buffered stdout */
 
-	while ((ch = getopt_long(argc, argv, "b:c:d:ef:g:hil:m:no:p:qr:s:t:vw:xCD:F:G:I:LMN:OP:RS:T:W", NULL, NULL))
+	while ((ch = getopt_long(argc, argv, "b:c:d:ef:g:hil:m:no:p:qr:s:t:vw:xCD:F:G:HI:LMN:OP:RS:T:W", NULL, NULL))
 	       != EOF)
 		switch (ch) {
 		case 'b':
@@ -1579,6 +1671,9 @@ main(int argc, char **argv)
 			maxfilelen = getnum(optarg, &endp);
 			if (maxfilelen <= 0)
 				usage();
+			break;
+		case 'H':
+			punchholes = 1;
 			break;
 		case 'I':
 			interactiveSince = getnum(optarg, &endp);
@@ -1733,6 +1828,23 @@ main(int argc, char **argv)
 	if (fd < 0) {
 		prterr(fname);
 		exit(91);
+	}
+	if (punchholes) {
+#if !defined(F_PUNCHHOLE) && !defined(FALLOC_FL_PUNCH_HOLE)
+		fprintf(stderr, "-H: punching holes is not supported on this platform\n");
+		usage();
+#endif
+		if (ea || lite || !usehole) {
+			fprintf(stdout, "-H ignored: not compatible with -e, -L or -h\n");
+			punchholes = 0;
+		} else {
+			struct statfs sfs;
+			if (fstatfs(fd, &sfs) == -1 || sfs.f_bsize <= 0) {
+				prterr("fstatfs");
+				exit(93);
+			}
+			punchbdy = sfs.f_bsize;
+		}
 	}
 	fsxgoodfd = open(goodfile, O_RDWR|O_CREAT|O_TRUNC, 0666);
 	if (fsxgoodfd < 0) {
