@@ -70,7 +70,7 @@ END_TEST
 
 START_TEST(test_ignored_characters)
 {
-	/* Characters that are neither digits nor units are skipped. */
+	/* A space between parts, or a stray trailing letter, is harmless. */
 	ck_assert_int_eq(parsetime("1h 30m"), 5400);
 	ck_assert_int_eq(parsetime("2x"), 2);
 }

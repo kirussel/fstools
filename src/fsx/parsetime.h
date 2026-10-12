@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 1998-2009 Apple Inc. All rights reserved.
- * Copyright (c) 2026 Kirk Russell. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -30,6 +29,6 @@
  * Units are s, m, h, d, w and y (365 days); a string with no unit is
  * taken as a bare number of seconds.
  */
-int parsetime(const char *t);
+int parsetime(char *t);
 
 #endif /* FSX_PARSETIME_H */

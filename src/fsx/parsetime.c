@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 1998-2009 Apple Inc. All rights reserved.
- * Copyright (c) 2026 Kirk Russell. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -22,41 +21,59 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include <ctype.h>
-#include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 
 #include "parsetime.h"
 
 int
-parsetime(const char *t)
+parsetime(char *t)
 {
-	static const struct {
-		char c;
-		int mult;
-	} units[] = {
-		{ 's', 1 },
-		{ 'm', 60 },
-		{ 'h', 3600 },
-		{ 'd', 86400 },
-		{ 'w', 604800 },
-		{ 'y', 31536000 },
-	};
-	const char *t_orig = t;
-	int secs = 0, val = 0;
+	int i = 0;
+	int secs = 0;
+	char b[128];
+	bzero(b, 128);
+	size_t n = 0; /* digits collected in b */
 
-	for (; *t; t++) {
-		size_t u;
-		if (isdigit((unsigned char)*t)) {
-			val = val * 10 + (*t - '0');
-			continue;
+	for (i = 0; i < strlen(t); i++) {
+		switch (t[i]) {
+		case 's':
+			secs += atoi(b);
+			bzero(b, 128);
+			n = 0;
+			break;
+		case 'm':
+			secs += atoi(b) * 60;
+			bzero(b, 128);
+			n = 0;
+			break;
+		case 'h':
+			secs += atoi(b) * 60 * 60;
+			bzero(b, 128);
+			n = 0;
+			break;
+		case 'd':
+			secs += atoi(b) * 60 * 60 * 24;
+			bzero(b, 128);
+			n = 0;
+			break;
+		case 'w':
+			secs += atoi(b) * 60 * 60 * 24 * 7;
+			bzero(b, 128);
+			n = 0;
+			break;
+		case 'y':
+			secs += atoi(b) * 60 * 60 * 24 * 365;
+			bzero(b, 128);
+			n = 0;
+			break;
+		default:
+			if (n < sizeof(b) - 1)
+				b[n++] = t[i];
 		}
-		for (u = 0; u < sizeof(units) / sizeof(units[0]); u++)
-			if (units[u].c == *t) {
-				secs += val * units[u].mult;
-				val = 0;
-				break;
-			}
 	}
-	return secs ? secs : atoi(t_orig); /* keep the "bare number" fallback */
+	if (secs == 0) // maybe they just gave us a number?
+		secs = atoi(t);
+	return (secs);
 }
