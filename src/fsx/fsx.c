@@ -100,11 +100,12 @@
  * Non-Apple portability: Linux has no F_NOCACHE (-C just exercises the
  * cached path), different xattr signatures, and older glibc lacks strlcpy.
  *
- * xattr: Linux has no position argument, and fsetxattr's flags are the same
- * values as Apple's options (XATTR_CREATE/REPLACE), so those are passed
- * through.  The position and options of fgetxattr, and the options of
- * fremovexattr, have no Linux equivalent and are dropped, so callers must
- * keep passing 0 for them.
+ * xattr: Linux has no position argument.  fsetxattr's flags are passed
+ * through as the options, but the numeric values differ (XATTR_CREATE/REPLACE
+ * are 1/2 on Linux and 2/4 on Apple), so callers must use the symbolic names
+ * and never literals.  The position and options of fgetxattr, and the
+ * options of fremovexattr, have no Linux equivalent and are dropped, so
+ * callers must keep passing 0 for them.
  */
 # define fsx_nocache(fd, on)	(0)
 # define fgetxattr(fd, name, buf, size, pos, opts)	fgetxattr(fd, name, buf, size)
@@ -1270,6 +1271,28 @@ dotruncate(unsigned size)
 }
 
 
+/*
+ * Deallocate [start, start + len) without changing the file size.
+ * Returns 0, or -1 with errno set.
+ */
+static int
+punch_range(off_t start, off_t len)
+{
+#if defined(F_PUNCHHOLE)
+	struct fpunchhole fp;
+
+	bzero(&fp, sizeof(fp));
+	fp.fp_offset = start;
+	fp.fp_length = len;
+	return fcntl(fd, F_PUNCHHOLE, &fp);
+#elif defined(FALLOC_FL_PUNCH_HOLE)
+	return fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, start, len);
+#else
+	errno = ENOTSUP;
+	return -1;
+#endif
+}
+
 void
 dopunchhole(unsigned offset, unsigned size)
 {
@@ -1307,27 +1330,12 @@ dopunchhole(unsigned offset, unsigned size)
 		getchar();
 	}
 
-#if defined(F_PUNCHHOLE)
-	{
-		struct fpunchhole fp;
-		bzero(&fp, sizeof(fp));
-		fp.fp_offset = start;
-		fp.fp_length = end - start;
-		if (fcntl(fd, F_PUNCHHOLE, &fp) == -1) {
-			logdump();
-			prt("punchhole: 0x%llx thru 0x%llx\n", (unsigned long long)start, (unsigned long long)end);
-			prterr("dopunchhole: fcntl(F_PUNCHHOLE)");
-			failure(190);
-		}
-	}
-#elif defined(FALLOC_FL_PUNCH_HOLE)
-	if (fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, start, end - start) == -1) {
+	if (punch_range(start, end - start) == -1) {
 		logdump();
 		prt("punchhole: 0x%llx thru 0x%llx\n", (unsigned long long)start, (unsigned long long)end);
-		prterr("dopunchhole: fallocate(PUNCH_HOLE)");
+		prterr("dopunchhole: punch hole");
 		failure(190);
 	}
-#endif
 }
 
 
@@ -1910,9 +1918,26 @@ main(int argc, char **argv)
 		 */
 		punchbdy = page_size;
 #endif
+		/*
+		 * maxfilelen is final here: only -L resizes it from the file, and
+		 * -L is rejected above.  Without -L the file was just truncated.
+		 */
 		if (punchbdy * 2 > maxfilelen) {
 			fprintf(stderr, "-H: -F %lu is too small to punch %d byte blocks\n",
 			    maxfilelen, punchbdy);
+			exit(94);
+		}
+		/*
+		 * Probe once so an unsupported filesystem is reported as such
+		 * instead of as a data-integrity failure on the first punch.
+		 */
+		if (ftruncate(fd, punchbdy) == -1 || punch_range(0, punchbdy) == -1) {
+			fprintf(stderr, "-H: hole punching is not supported on this filesystem: %s\n",
+			    strerror(errno));
+			exit(94);
+		}
+		if (ftruncate(fd, 0) == -1) {
+			prterr("-H: ftruncate after probe");
 			exit(94);
 		}
 	}
