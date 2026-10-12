@@ -21,7 +21,9 @@
 # @APPLE_LICENSE_HEADER_END@
 #
 
-ARCHS := ppc i386 x86_64
+ifeq ($(shell uname -s),Darwin)
+ARCHS ?= ppc i386 x86_64
+endif
 INTERNAL_FRAMEWORKS := /AppleInternal/Library/Frameworks
 CFLAGS := $(ARCHS:%=-arch %) -Wall -O3
 

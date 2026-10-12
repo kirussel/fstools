@@ -50,12 +50,23 @@
  *
  */
 
+#ifdef __linux__
+# define _GNU_SOURCE
+#endif
 #include <sys/xattr.h>
 #include <getopt.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <sys/paths.h>
+#ifdef __APPLE__
+# include <sys/paths.h>
+#else
+# include <stdint.h>
+# include <strings.h>
+# ifndef _PATH_FORKSPECIFIER
+#  define _PATH_FORKSPECIFIER "/..namedfork/"	/* named forks are macOS-only */
+# endif
+#endif
 #include <sys/param.h>
 #ifdef _UWIN
 # include <limits.h>
@@ -82,6 +93,45 @@
 #include <libgen.h>
 #ifdef XILOG
 # include <XILog/XILog.h>
+#endif
+
+#ifndef __APPLE__
+/*
+ * Non-Apple portability: Linux has no F_NOCACHE (-C just exercises the
+ * cached path), different xattr signatures, and older glibc lacks strlcpy.
+ */
+# define fsx_nocache(fd, on)	(0)
+# define fgetxattr(fd, name, buf, size, pos, opts)	fgetxattr(fd, name, buf, size)
+# define fsetxattr(fd, name, buf, size, pos, opts)	fsetxattr(fd, name, buf, size, 0)
+# define fremovexattr(fd, name, opts)	fremovexattr(fd, name)
+# if defined(__GLIBC__) && !__GLIBC_PREREQ(2, 38)
+static size_t
+fsx_strlcpy(char *dst, const char *src, size_t n)
+{
+	size_t len = strlen(src);
+
+	if (n) {
+		size_t c = (len >= n) ? n - 1 : len;
+		memcpy(dst, src, c);
+		dst[c] = '\0';
+	}
+	return len;
+}
+
+static size_t
+fsx_strlcat(char *dst, const char *src, size_t n)
+{
+	size_t dlen = strnlen(dst, n);
+
+	if (dlen == n)
+		return n + strlen(src);
+	return dlen + fsx_strlcpy(dst + dlen, src, n - dlen);
+}
+#  define strlcpy fsx_strlcpy
+#  define strlcat fsx_strlcat
+# endif
+#else
+# define fsx_nocache(fd, on)	fcntl(fd, F_NOCACHE, on)
 #endif
 
 /*
@@ -776,13 +826,13 @@ doread(unsigned offset, unsigned size)
 			failure(140);
 		}
 				
-		if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
+		if (cache_off && (fsx_nocache(fd, 1) != 0)) { // turn data caching off
 			logdump();
 			prterr("doread: fcntl(F_NOCACHE, 1)");
 			failure(201);
 		}
 		iret = read(fd, temp_buf, size);
-		if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
+		if (cache_off && (fsx_nocache(fd, 0) != 0)) {
 			logdump();
 			prterr("doread: fcntl(F_NOCACHE, 0)");
 			failure(201);
@@ -969,7 +1019,7 @@ dowrite(unsigned offset, unsigned size)
 					prterr("dowrite: lseek");
 					failure(150);
 				}
-				if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
+				if (cache_off && (fsx_nocache(fd, 1) != 0)) { // turn data caching off
 					logdump();
 					prterr("dowrite: fcntl(F_NOCACHE, 1)");
 					failure(201);
@@ -986,7 +1036,7 @@ dowrite(unsigned offset, unsigned size)
 					}
 					failure(151);
 				}
-				if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
+				if (cache_off && (fsx_nocache(fd, 0) != 0)) {
 					logdump();
 					prterr("dowrite: fcntl(F_NOCACHE, 0)");
 					failure(201);
@@ -1016,7 +1066,7 @@ dowrite(unsigned offset, unsigned size)
 			prterr("dowrite: lseek");
 			failure(150);
 		}
-		if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
+		if (cache_off && (fsx_nocache(fd, 1) != 0)) { // turn data caching off
 			logdump();
 			prterr("dowrite: fcntl(F_NOCACHE, 1)");
 			failure(201);
@@ -1033,7 +1083,7 @@ dowrite(unsigned offset, unsigned size)
 			}
 			failure(151);
 		}
-		if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
+		if (cache_off && (fsx_nocache(fd, 0) != 0)) {
 			logdump();
 			prterr("dowrite: fcntl(F_NOCACHE, 0)");
 			failure(201);
