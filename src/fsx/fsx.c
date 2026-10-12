@@ -99,10 +99,16 @@
 /*
  * Non-Apple portability: Linux has no F_NOCACHE (-C just exercises the
  * cached path), different xattr signatures, and older glibc lacks strlcpy.
+ *
+ * xattr: Linux has no position argument, and fsetxattr's flags are the same
+ * values as Apple's options (XATTR_CREATE/REPLACE), so those are passed
+ * through.  The position and options of fgetxattr, and the options of
+ * fremovexattr, have no Linux equivalent and are dropped, so callers must
+ * keep passing 0 for them.
  */
 # define fsx_nocache(fd, on)	(0)
 # define fgetxattr(fd, name, buf, size, pos, opts)	fgetxattr(fd, name, buf, size)
-# define fsetxattr(fd, name, buf, size, pos, opts)	fsetxattr(fd, name, buf, size, 0)
+# define fsetxattr(fd, name, buf, size, pos, opts)	fsetxattr(fd, name, buf, size, opts)
 # define fremovexattr(fd, name, opts)	fremovexattr(fd, name)
 # if defined(__GLIBC__) && !__GLIBC_PREREQ(2, 38)
 static size_t
