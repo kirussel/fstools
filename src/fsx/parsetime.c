@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 1998-2009 Apple Inc. All rights reserved.
+ * Copyright (c) 2026 Kirk Russell. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -21,52 +22,54 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include <stdio.h>
+#include <limits.h>
+#include <stddef.h>
 #include <stdlib.h>
-#include <string.h>
-#include <strings.h>
 
 #include "parsetime.h"
 
-int
-parsetime(char *t)
+static long long
+clamp(long long v)
 {
-	int i = 0;
-	int secs = 0;
-	char b[128];
-	bzero(b, 128);
+	if (v > INT_MAX)
+		return INT_MAX;
+	if (v < INT_MIN)
+		return INT_MIN;
+	return v;
+}
 
-	for (i = 0; i < strlen(t); i++) {
-		switch (t[i]) {
-		case 's':
-			secs += atoi(b);
-			bzero(b, 128);
-			break;
-		case 'm':
-			secs += atoi(b) * 60;
-			bzero(b, 128);
-			break;
-		case 'h':
-			secs += atoi(b) * 60 * 60;
-			bzero(b, 128);
-			break;
-		case 'd':
-			secs += atoi(b) * 60 * 60 * 24;
-			bzero(b, 128);
-			break;
-		case 'w':
-			secs += atoi(b) * 60 * 60 * 24 * 7;
-			bzero(b, 128);
-			break;
-		case 'y':
-			secs += atoi(b) * 60 * 60 * 24 * 365;
-			bzero(b, 128);
-			break;
-		default:
-			sprintf(b, "%s%c", b, t[i]);
-		}
+int
+parsetime(const char *t)
+{
+	static const struct {
+		char c;
+		int mult;
+	} units[] = {
+		{ 's', 1 },
+		{ 'm', 60 },
+		{ 'h', 3600 },
+		{ 'd', 86400 },
+		{ 'w', 604800 },
+		{ 'y', 31536000 },
+	};
+	const char *t_orig = t;
+	const char *num = t; /* start of the current number */
+	long long secs = 0; /* clamped to INT_MIN..INT_MAX, so never overflows */
+	long long val;
+
+	for (; *t; t++) {
+		size_t u;
+		for (u = 0; u < sizeof(units) / sizeof(units[0]); u++)
+			if (units[u].c == *t) {
+				/* like atoi(): leading sign, stop at "." etc. */
+				val = clamp(strtol(num, NULL, 10));
+				secs = clamp(secs + val * units[u].mult);
+				num = t + 1;
+				break;
+			}
 	}
-	if (secs == 0) // maybe they just gave us a number?
-		secs = atoi(t);
-	return (secs);
+	if (secs)
+		return (int)secs;
+	/* keep the "bare number" fallback */
+	return (int)clamp(strtol(t_orig, NULL, 10));
 }

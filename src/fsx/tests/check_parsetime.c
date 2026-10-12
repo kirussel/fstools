@@ -27,24 +27,11 @@
  */
 
 #include <check.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../parsetime.h"
-
-/*
- * KNOWN BUG: parsetime() collects digits with sprintf(b, "%s%c", b, c),
- * whose source and destination overlap, which is undefined behaviour.
- * glibc keeps only the last digit before each unit, so "45m" parses as
- * 5 minutes; macOS libc happens to give the right answer.  Assertions
- * wrapped in KNOWN_BUG() expect the buggy value on glibc until
- * parsetime() is fixed.
- */
-#ifdef __GLIBC__
-# define KNOWN_BUG(buggy, correct) (buggy)
-#else
-# define KNOWN_BUG(buggy, correct) (correct)
-#endif
 
 START_TEST(test_bare_number)
 {
@@ -68,16 +55,16 @@ END_TEST
 START_TEST(test_multi_digit)
 {
 	ck_assert_int_eq(parsetime("120s"), 120);
-	ck_assert_int_eq(parsetime("45m"), KNOWN_BUG(5 * 60, 45 * 60));
+	ck_assert_int_eq(parsetime("45m"), 45 * 60);
 	ck_assert_int_eq(parsetime("007s"), 7);
 }
 END_TEST
 
 START_TEST(test_combined_units)
 {
-	ck_assert_int_eq(parsetime("1h30m"), KNOWN_BUG(3600, 5400));
+	ck_assert_int_eq(parsetime("1h30m"), 5400);
 	ck_assert_int_eq(parsetime("1d2h3m4s"), 86400 + 2 * 3600 + 3 * 60 + 4);
-	ck_assert_int_eq(parsetime("30m1h"), KNOWN_BUG(3600, 5400));
+	ck_assert_int_eq(parsetime("30m1h"), 5400);
 	ck_assert_int_eq(parsetime("1m1m"), 120);
 }
 END_TEST
@@ -85,7 +72,7 @@ END_TEST
 START_TEST(test_ignored_characters)
 {
 	/* A space between parts, or a stray trailing letter, is harmless. */
-	ck_assert_int_eq(parsetime("1h 30m"), KNOWN_BUG(3600, 5400));
+	ck_assert_int_eq(parsetime("1h 30m"), 5400);
 	ck_assert_int_eq(parsetime("2x"), 2);
 }
 END_TEST
@@ -113,6 +100,26 @@ START_TEST(test_negative_falls_back_to_atoi)
 }
 END_TEST
 
+START_TEST(test_number_like_atoi)
+{
+	/* Each number is read like atoi(): a sign counts, "." ends it. */
+	ck_assert_int_eq(parsetime("1.5h"), 3600);
+	ck_assert_int_eq(parsetime("-5m"), -300);
+}
+END_TEST
+
+START_TEST(test_overflow)
+{
+	/* Values outside the int range are clamped rather than wrapping. */
+	ck_assert_int_eq(parsetime("99999999999"), INT_MAX);
+	ck_assert_int_eq(parsetime("99999999999s"), INT_MAX);
+	ck_assert_int_eq(parsetime("100y"), INT_MAX);
+	ck_assert_int_eq(parsetime("68y1h"), 68 * 31536000 + 3600);
+	ck_assert_int_eq(parsetime("-99999999999"), INT_MIN);
+	ck_assert_int_eq(parsetime("-99999999999s"), INT_MIN);
+}
+END_TEST
+
 START_TEST(test_long_input)
 {
 	/* A long argument must not overflow any fixed-size buffer. */
@@ -120,16 +127,7 @@ START_TEST(test_long_input)
 
 	memset(buf, '0', sizeof(buf));
 	strcpy(buf + sizeof(buf) - 3, "5s");
-#ifdef __GLIBC__
 	ck_assert_int_eq(parsetime(buf), 5);
-#else
-	/*
-	 * KNOWN BUG: where sprintf really appends, parsetime() overruns its
-	 * 128-byte digit buffer on this input, so it is only run on glibc
-	 * (see KNOWN_BUG above).
-	 */
-	(void)buf;
-#endif
 }
 END_TEST
 
@@ -147,6 +145,8 @@ parsetime_suite(void)
 	tcase_add_test(tc, test_trailing_number_without_unit);
 	tcase_add_test(tc, test_zero_and_empty);
 	tcase_add_test(tc, test_negative_falls_back_to_atoi);
+	tcase_add_test(tc, test_number_like_atoi);
+	tcase_add_test(tc, test_overflow);
 	tcase_add_test(tc, test_long_input);
 	suite_add_tcase(s, tc);
 	return s;

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 1998-2009 Apple Inc. All rights reserved.
+ * Copyright (c) 2026 Kirk Russell. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -27,8 +28,10 @@
 /*
  * Parse a duration such as "90", "30s", "1h30m" or "2w" into seconds.
  * Units are s, m, h, d, w and y (365 days); a string with no unit is
- * taken as a bare number of seconds.
+ * taken as a bare number of seconds.  Each number is read like atoi()
+ * (leading whitespace and sign allowed, "." ends it), and the result is
+ * clamped to INT_MIN..INT_MAX.
  */
-int parsetime(char *t);
+int parsetime(const char *t);
 
 #endif /* FSX_PARSETIME_H */
