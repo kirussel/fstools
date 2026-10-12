@@ -34,12 +34,27 @@ LIBS += -framework XILog
 endif
 
 CLANG_FORMAT ?= clang-format
-SRCS := fsx.c
+PKG_CONFIG ?= pkg-config
+SRCS := fsx.c parsetime.c parsetime.h tests/check_parsetime.c
 
-.PHONY: clean lint format format-diff
+# Unit tests link against the system's Check library, which is usually
+# built for the host architecture only, so they don't use $(ARCHS).
+CHECK_CFLAGS := $(shell $(PKG_CONFIG) --cflags check 2>/dev/null)
+CHECK_LIBS := $(shell $(PKG_CONFIG) --libs check 2>/dev/null)
+TESTS := tests/check_parsetime
 
-fsx:
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ fsx.c $(LIBS)
+.PHONY: check clean lint format format-diff
+
+fsx: fsx.c parsetime.c parsetime.h
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ fsx.c parsetime.c $(LIBS)
+
+# Build and run the unit tests (needs Check: https://libcheck.github.io/check/).
+check: $(TESTS)
+	@for t in $(TESTS); do ./$$t || exit 1; done
+
+tests/check_parsetime: tests/check_parsetime.c parsetime.c parsetime.h
+	@$(PKG_CONFIG) --exists check || { echo "Check not found by $(PKG_CONFIG); install it (e.g. apt install check, brew install check)" >&2; exit 1; }
+	$(CC) -Wall -O2 $(CPPFLAGS) $(CHECK_CFLAGS) -o $@ tests/check_parsetime.c parsetime.c $(CHECK_LIBS)
 
 # Fail if any source differs from .clang-format (for CI).
 lint:
@@ -56,5 +71,5 @@ format:
 	$(CLANG_FORMAT) -i $(SRCS)
 
 clean:
-	-rm -f *.o fsx
+	-rm -f *.o fsx $(TESTS)
 

@@ -45,8 +45,8 @@
  *	Added punch-hole option (-H).
  *
  * Compile with:
- 	cc -Wall -O3 fsx.c -o fsx
- 	gcc -arch ppc -arch i386 -arch ppc64 -arch x86_64 -Wall -O3 fsx.c -o fsx -DXILOG -F/AppleInternal/Library/Frameworks -framework XILog
+ 	cc -Wall -O3 fsx.c parsetime.c -o fsx
+ 	gcc -arch ppc -arch i386 -arch ppc64 -arch x86_64 -Wall -O3 fsx.c parsetime.c -o fsx -DXILOG -F/AppleInternal/Library/Frameworks -framework XILog
  *
  */
 
@@ -91,6 +91,8 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <libgen.h>
+
+#include "parsetime.h"
 #ifdef XILOG
 # include <XILog/XILog.h>
 #endif
@@ -266,49 +268,6 @@ void writefileimage(void);
 	     ((monitorend == -1) || ((OPSTART) <= monitorend)))))))
 
 void docloseopen(void);
-
-int
-parsetime(char *t)
-{
-	int i = 0;
-	int secs = 0;
-	char b[128];
-	bzero(b, 128);
-
-	for (i = 0; i < strlen(t); i++) {
-		switch (t[i]) {
-		case 's':
-			secs += atoi(b);
-			bzero(b, 128);
-			break;
-		case 'm':
-			secs += atoi(b) * 60;
-			bzero(b, 128);
-			break;
-		case 'h':
-			secs += atoi(b) * 60 * 60;
-			bzero(b, 128);
-			break;
-		case 'd':
-			secs += atoi(b) * 60 * 60 * 24;
-			bzero(b, 128);
-			break;
-		case 'w':
-			secs += atoi(b) * 60 * 60 * 24 * 7;
-			bzero(b, 128);
-			break;
-		case 'y':
-			secs += atoi(b) * 60 * 60 * 24 * 365;
-			bzero(b, 128);
-			break;
-		default:
-			sprintf(b, "%s%c", b, t[i]);
-		}
-	}
-	if (secs == 0) // maybe they just gave us a number?
-		secs = atoi(t);
-	return (secs);
-}
 
 
 void
