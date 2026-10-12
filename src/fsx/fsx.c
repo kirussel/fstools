@@ -1888,12 +1888,26 @@ main(int argc, char **argv)
 			fprintf(stdout, "-H ignored: not compatible with -e, -L or -h\n");
 			punchholes = 0;
 		} else {
+#ifdef __APPLE__
+			/* F_PUNCHHOLE needs allocation-block alignment, which f_bsize is on APFS/HFS+ */
 			struct statfs sfs;
 			if (fstatfs(fd, &sfs) == -1 || sfs.f_bsize <= 0) {
 				prterr("fstatfs");
 				exit(93);
 			}
 			punchbdy = sfs.f_bsize;
+#else
+			/*
+			 * fallocate() takes any alignment.  f_bsize is only the preferred
+			 * I/O size (up to 1MB on NFS/FUSE), so use a fixed granularity.
+			 */
+			punchbdy = page_size;
+#endif
+			if (punchbdy * 2 > maxfilelen) {
+				fprintf(stdout, "-H ignored: -F %lu is too small to punch %d byte blocks\n",
+				    maxfilelen, punchbdy);
+				punchholes = 0;
+			}
 		}
 	}
 	fsxgoodfd = open(goodfile, O_RDWR|O_CREAT|O_TRUNC, 0666);
