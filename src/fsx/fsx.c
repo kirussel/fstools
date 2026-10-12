@@ -308,10 +308,7 @@ int parsetime(char *t)
 
 
 void
-mvwarnc(code, fmt, ap)
-	int code;
-	const char *fmt;
-	va_list ap;
+mvwarnc(int code, const char *fmt, va_list ap)
 {
 	fprintf(stderr, "fsx: ");
 	if (fmt != NULL) {
@@ -1492,8 +1489,7 @@ done:
 
 
 void
-cleanup(sig)
-	int	sig;
+cleanup(int sig)
 {
 	if (sig)
 	{
