@@ -33,10 +33,27 @@ CFLAGS += -F/AppleInternal/Library/Frameworks
 LIBS += -framework XILog
 endif
 
-.PHONY: clean
+CLANG_FORMAT ?= clang-format
+SRCS := fsx.c
+
+.PHONY: clean lint format format-diff
 
 fsx:
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ fsx.c $(LIBS)
+
+# Fail if any source differs from .clang-format (for CI).
+lint:
+	$(CLANG_FORMAT) --dry-run --Werror $(SRCS)
+
+# Show what clang-format would change, as a diff, without touching files.
+format-diff:
+	@for f in $(SRCS); do \
+		$(CLANG_FORMAT) $$f | diff -u $$f - || true; \
+	done
+
+# Rewrite sources in place.
+format:
+	$(CLANG_FORMAT) -i $(SRCS)
 
 clean:
 	-rm -f *.o fsx
