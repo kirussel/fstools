@@ -1,0 +1,39 @@
+# clang-format configuration tuned to match the existing style of
+# src/fsx/fsx.c (BSD/Apple style: 8-wide tabs, K&R braces, return type on
+# its own line for definitions, "# define" nesting in preprocessor blocks).
+# Requires clang-format 18 or newer (SkipMacroDefinitionBody).
+---
+Language: Cpp
+BasedOnStyle: Mozilla
+
+# Indentation: hard tabs, 8 wide.
+IndentWidth: 8
+TabWidth: 8
+UseTab: Always
+IndentCaseLabels: false
+
+# Keep the author's own line breaks; many lines run past 80 columns.
+ColumnLimit: 0
+ReflowComments: false
+
+# Braces on the same line, except for function bodies.
+BreakBeforeBraces: Linux
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+
+# "int\nfoo(void)" for definitions, "int foo(void);" for prototypes.
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+
+BinPackArguments: true
+AlignTrailingComments: false
+MaxEmptyLinesToKeep: 2
+DerivePointerAlignment: true
+
+# Nested preprocessor directives are written "# define", "#  define".
+IndentPPDirectives: AfterHash
+PPIndentWidth: 1
+
+# Leave hand-formatted macro bodies alone.
+SkipMacroDefinitionBody: true
+
+# Include order matters (_GNU_SOURCE, platform blocks).
+SortIncludes: Never
