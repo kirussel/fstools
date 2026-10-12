@@ -100,6 +100,14 @@ START_TEST(test_negative_falls_back_to_atoi)
 }
 END_TEST
 
+START_TEST(test_number_like_atoi)
+{
+	/* Each number is read like atoi(): a sign counts, "." ends it. */
+	ck_assert_int_eq(parsetime("1.5h"), 3600);
+	ck_assert_int_eq(parsetime("-5m"), -300);
+}
+END_TEST
+
 START_TEST(test_overflow)
 {
 	/* Values past INT_MAX are clamped to INT_MAX rather than wrapping. */
@@ -135,6 +143,7 @@ parsetime_suite(void)
 	tcase_add_test(tc, test_trailing_number_without_unit);
 	tcase_add_test(tc, test_zero_and_empty);
 	tcase_add_test(tc, test_negative_falls_back_to_atoi);
+	tcase_add_test(tc, test_number_like_atoi);
 	tcase_add_test(tc, test_overflow);
 	tcase_add_test(tc, test_long_input);
 	suite_add_tcase(s, tc);
