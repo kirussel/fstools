@@ -64,7 +64,7 @@
 # include <stdint.h>
 # include <strings.h>
 # ifndef _PATH_FORKSPECIFIER
-#  define _PATH_FORKSPECIFIER "/..namedfork/"	/* named forks are macOS-only */
+#  define _PATH_FORKSPECIFIER "/..namedfork/" /* named forks are macOS-only */
 # endif
 #endif
 #include <sys/param.h>
