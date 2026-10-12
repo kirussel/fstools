@@ -1295,6 +1295,32 @@ prealloc_range(off_t start, off_t len, int keep_size)
 {
 #if defined(FALLOC_FL_KEEP_SIZE)
 	return fallocate(fd, keep_size ? FALLOC_FL_KEEP_SIZE : 0, start, len);
+#elif defined(F_PREALLOCATE)
+	/*
+	 * F_PREALLOCATE can't target an arbitrary range: it allocates relative
+	 * to the physical EOF and never changes the file size.  So allocate
+	 * what lies past the current EOF (F_ALLOCATEALL: all or nothing; the
+	 * kernel may allocate more than asked, which isn't observable here),
+	 * and for the default mode extend the size afterwards.
+	 */
+	struct stat sb;
+	fstore_t fst;
+	off_t end = start + len;
+
+	if (fstat(fd, &sb) == -1)
+		return -1;
+	if (end > sb.st_size) {
+		bzero(&fst, sizeof(fst));
+		fst.fst_flags = F_ALLOCATEALL;
+		fst.fst_posmode = F_PEOFPOSMODE;
+		fst.fst_offset = 0;
+		fst.fst_length = end - sb.st_size;
+		if (fcntl(fd, F_PREALLOCATE, &fst) == -1)
+			return -1;
+		if (!keep_size && ftruncate(fd, end) == -1)
+			return -1;
+	}
+	return 0;
 #else
 	(void)start;
 	(void)len;
@@ -1983,13 +2009,13 @@ main(int argc, char **argv)
 		}
 	}
 	if (preallocate) {
-#if !defined(FALLOC_FL_KEEP_SIZE)
-		fprintf(stderr, "-A: fallocate is not supported on this platform\n");
+#if !defined(FALLOC_FL_KEEP_SIZE) && !defined(F_PREALLOCATE)
+		fprintf(stderr, "-A: preallocation is not supported on this platform\n");
 		usage();
 #else
 		/* Probe both modes so an unsupported filesystem isn't reported as corruption. */
 		if (prealloc_range(0, page_size, 1) == -1 || prealloc_range(0, page_size, 0) == -1) {
-			fprintf(stderr, "-A: fallocate is not supported on this filesystem: %s\n",
+			fprintf(stderr, "-A: preallocation is not supported on this filesystem: %s\n",
 				strerror(errno));
 			exit(94);
 		}
