@@ -1524,7 +1524,7 @@ usage(void)
 	-D startingop: debug output starting at specified operation\n\
 	-G logsize: #entries in oplog (default 1024)\n\
 	-F flen: the upper bound on file size (default 262144)\n\
-	-H: punch holes (deallocate random block-aligned ranges)\n\
+	-H: punch holes (deallocate random block-aligned ranges; not with -e, -L, -h)\n\
 	-I: start interactive mode since operation opnum\n\
 	-L: fsxLite - no file creations & no file size changes\n\
 	-M: slow motion mode, wait 1 second before each op\n\
@@ -1870,6 +1870,11 @@ main(int argc, char **argv)
 		exit(99);
 	}
 
+	if (punchholes && (ea || lite || !usehole)) {
+		fprintf(stderr, "-H: not compatible with -e, -L or -h\n");
+		exit(94);
+	}
+
 	if (seed == 0)
 		seed = (time(NULL) + getpid()) | 1;
 	initstate(seed, state, 256);
@@ -1884,30 +1889,25 @@ main(int argc, char **argv)
 		fprintf(stderr, "-H: punching holes is not supported on this platform\n");
 		usage();
 #endif
-		if (ea || lite || !usehole) {
-			fprintf(stdout, "-H ignored: not compatible with -e, -L or -h\n");
-			punchholes = 0;
-		} else {
 #ifdef __APPLE__
-			/* F_PUNCHHOLE needs allocation-block alignment, which f_bsize is on APFS/HFS+ */
-			struct statfs sfs;
-			if (fstatfs(fd, &sfs) == -1 || sfs.f_bsize <= 0) {
-				prterr("fstatfs");
-				exit(93);
-			}
-			punchbdy = sfs.f_bsize;
+		/* F_PUNCHHOLE needs allocation-block alignment, which f_bsize is on APFS/HFS+ */
+		struct statfs sfs;
+		if (fstatfs(fd, &sfs) == -1 || sfs.f_bsize <= 0) {
+			prterr("fstatfs");
+			exit(93);
+		}
+		punchbdy = sfs.f_bsize;
 #else
-			/*
-			 * fallocate() takes any alignment.  f_bsize is only the preferred
-			 * I/O size (up to 1MB on NFS/FUSE), so use a fixed granularity.
-			 */
-			punchbdy = page_size;
+		/*
+		 * fallocate() takes any alignment.  f_bsize is only the preferred
+		 * I/O size (up to 1MB on NFS/FUSE), so use a fixed granularity.
+		 */
+		punchbdy = page_size;
 #endif
-			if (punchbdy * 2 > maxfilelen) {
-				fprintf(stdout, "-H ignored: -F %lu is too small to punch %d byte blocks\n",
-				    maxfilelen, punchbdy);
-				punchholes = 0;
-			}
+		if (punchbdy * 2 > maxfilelen) {
+			fprintf(stderr, "-H: -F %lu is too small to punch %d byte blocks\n",
+			    maxfilelen, punchbdy);
+			exit(94);
 		}
 	}
 	fsxgoodfd = open(goodfile, O_RDWR|O_CREAT|O_TRUNC, 0666);
