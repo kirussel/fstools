@@ -1521,9 +1521,11 @@ main(int argc, char **argv)
 	bzero(logfile, MAXPATHLEN);
 	char forkname[MAXPATHLEN];
 	bzero(forkname, MAXPATHLEN);
+#ifdef XILOG
 	char *logpath = NULL;
-	eaname = argv[0];
 	int xml = 0;
+#endif
+	eaname = argv[0];
 
 	goodfile[0] = 0;
 	logfile[0] = 0;
@@ -1587,7 +1589,9 @@ main(int argc, char **argv)
 			interactive = 1;
 			break;
 		case 'l':
+#ifdef XILOG
 			logpath = optarg;
+#endif
 			break;
 		case 'm':
 			monitorstart = getnum(optarg, &endp);
@@ -1641,7 +1645,9 @@ main(int argc, char **argv)
 				usage();
 			break;
 		case 'x':
+#ifdef XILOG
 			xml = 1;
+#endif
 			break;
 		case 'y':
 			sync_before_close = 1;
