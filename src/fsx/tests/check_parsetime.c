@@ -101,10 +101,7 @@ END_TEST
 
 START_TEST(test_long_input)
 {
-	/*
-	 * The old implementation copied digits into a 128-byte buffer with
-	 * sprintf and overflowed it on long input; make sure that is gone.
-	 */
+	/* A long argument must not overflow any fixed-size buffer. */
 	char buf[1024];
 
 	memset(buf, '0', sizeof(buf));
