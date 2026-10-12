@@ -42,18 +42,31 @@
  *  
  *	Added no-cached r/w option May 2008 -- rtucker@apple.com, bsuinn@apple.com 
  *
+ *	Added punch-hole option (-H).
+ *
  * Compile with:
  	cc -Wall -O3 fsx.c -o fsx
  	gcc -arch ppc -arch i386 -arch ppc64 -arch x86_64 -Wall -O3 fsx.c -o fsx -DXILOG -F/AppleInternal/Library/Frameworks -framework XILog
  *
  */
 
+#ifdef __linux__
+# define _GNU_SOURCE
+#endif
 #include <sys/xattr.h>
 #include <getopt.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <sys/paths.h>
+#ifdef __APPLE__
+# include <sys/paths.h>
+#else
+# include <stdint.h>
+# include <strings.h>
+# ifndef _PATH_FORKSPECIFIER
+#  define _PATH_FORKSPECIFIER "/..namedfork/"	/* named forks are macOS-only */
+# endif
+#endif
 #include <sys/param.h>
 #ifdef _UWIN
 # include <limits.h>
@@ -61,6 +74,11 @@
 #endif
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
+#ifdef __linux__
+# include <sys/vfs.h>
+# include <linux/falloc.h>
+#endif
 #ifndef MAP_FILE
 # define MAP_FILE 0
 #endif
@@ -75,6 +93,52 @@
 #include <libgen.h>
 #ifdef XILOG
 # include <XILog/XILog.h>
+#endif
+
+#ifndef __APPLE__
+/*
+ * Non-Apple portability: Linux has no F_NOCACHE (-C just exercises the
+ * cached path), different xattr signatures, and older glibc lacks strlcpy.
+ *
+ * xattr: Linux has no position argument.  fsetxattr's flags are passed
+ * through as the options, but the numeric values differ (XATTR_CREATE/REPLACE
+ * are 1/2 on Linux and 2/4 on Apple), so callers must use the symbolic names
+ * and never literals.  The position and options of fgetxattr, and the
+ * options of fremovexattr, have no Linux equivalent and are dropped, so
+ * callers must keep passing 0 for them.
+ */
+# define fsx_nocache(fd, on)	(0)
+# define fgetxattr(fd, name, buf, size, pos, opts)	fgetxattr(fd, name, buf, size)
+# define fsetxattr(fd, name, buf, size, pos, opts)	fsetxattr(fd, name, buf, size, opts)
+# define fremovexattr(fd, name, opts)	fremovexattr(fd, name)
+# if defined(__GLIBC__) && !__GLIBC_PREREQ(2, 38)
+static size_t
+fsx_strlcpy(char *dst, const char *src, size_t n)
+{
+	size_t len = strlen(src);
+
+	if (n) {
+		size_t c = (len >= n) ? n - 1 : len;
+		memcpy(dst, src, c);
+		dst[c] = '\0';
+	}
+	return len;
+}
+
+static size_t
+fsx_strlcat(char *dst, const char *src, size_t n)
+{
+	size_t dlen = strnlen(dst, n);
+
+	if (dlen == n)
+		return n + strlen(src);
+	return dlen + fsx_strlcpy(dst + dlen, src, n - dlen);
+}
+#  define strlcpy fsx_strlcpy
+#  define strlcat fsx_strlcat
+# endif
+#else
+# define fsx_nocache(fd, on)	fcntl(fd, F_NOCACHE, on)
 #endif
 
 /*
@@ -106,6 +170,7 @@ int			logcount = 0;	/* total ops */
 #define OP_SKIPPED	7
 #define OP_NOCACHEREAD	8
 #define OP_NOCACHEWRITE 9
+#define OP_PUNCHHOLE	10
 
 int page_size;
 int page_mask;
@@ -162,11 +227,14 @@ unsigned int pinginterval = 10000; // About every 30sec?
 XILogRef xilogref;
 #endif
 int	gUseRandomNoCache = 0; /* -C randomly mix cached and un-cached r/w ops */
+int	punchholes = 0;		/* -H flag */
+int	punchbdy = 0;		/* fs block size, set once the file is open */
 
 char *msgbuf;
 int msgbuflen;
 
 void dotruncate(unsigned size);
+void dopunchhole(unsigned offset, unsigned size);
 void writefileimage(void);
 
 #define get_data_at(cp) \
@@ -368,6 +436,7 @@ offset_last_mod(int offset, int *write, int *tdown, int *tup)
 		switch (operation) {
 		case OP_MAPWRITE:
 		case OP_WRITE:
+		case OP_PUNCHHOLE:
 			if (*write != -1)
 				break;
 			if ((offset >= lp->args[0]) && (offset < (lp->args[0] + lp->args[1])))
@@ -483,6 +552,16 @@ logentrydump(int logent, int opnum)
 		    (badoff < (lp->args[0] + lp->args[1])))
 		{
 			prt("\t***WWWW");
+		}
+		break;
+	case OP_PUNCHHOLE:
+		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)", "PUNCH HOLE",
+		    lp->args[0], lp->args[0],
+		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
+		    lp->args[1], lp->args[1]);
+		if ((badoff >= lp->args[0]) && (badoff < lp->args[0] + lp->args[1]))
+		{
+			prt("\t***PPPP");
 		}
 		break;
 	case OP_TRUNCATE:
@@ -754,13 +833,13 @@ doread(unsigned offset, unsigned size)
 			failure(140);
 		}
 				
-		if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
+		if (cache_off && (fsx_nocache(fd, 1) != 0)) { // turn data caching off
 			logdump();
 			prterr("doread: fcntl(F_NOCACHE, 1)");
 			failure(201);
 		}
 		iret = read(fd, temp_buf, size);
-		if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
+		if (cache_off && (fsx_nocache(fd, 0) != 0)) {
 			logdump();
 			prterr("doread: fcntl(F_NOCACHE, 0)");
 			failure(201);
@@ -947,7 +1026,7 @@ dowrite(unsigned offset, unsigned size)
 					prterr("dowrite: lseek");
 					failure(150);
 				}
-				if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
+				if (cache_off && (fsx_nocache(fd, 1) != 0)) { // turn data caching off
 					logdump();
 					prterr("dowrite: fcntl(F_NOCACHE, 1)");
 					failure(201);
@@ -964,7 +1043,7 @@ dowrite(unsigned offset, unsigned size)
 					}
 					failure(151);
 				}
-				if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
+				if (cache_off && (fsx_nocache(fd, 0) != 0)) {
 					logdump();
 					prterr("dowrite: fcntl(F_NOCACHE, 0)");
 					failure(201);
@@ -994,7 +1073,7 @@ dowrite(unsigned offset, unsigned size)
 			prterr("dowrite: lseek");
 			failure(150);
 		}
-		if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
+		if (cache_off && (fsx_nocache(fd, 1) != 0)) { // turn data caching off
 			logdump();
 			prterr("dowrite: fcntl(F_NOCACHE, 1)");
 			failure(201);
@@ -1011,7 +1090,7 @@ dowrite(unsigned offset, unsigned size)
 			}
 			failure(151);
 		}
-		if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
+		if (cache_off && (fsx_nocache(fd, 0) != 0)) {
 			logdump();
 			prterr("dowrite: fcntl(F_NOCACHE, 0)");
 			failure(201);
@@ -1192,6 +1271,74 @@ dotruncate(unsigned size)
 }
 
 
+/*
+ * Deallocate [start, start + len) without changing the file size.
+ * Returns 0, or -1 with errno set.
+ */
+static int
+punch_range(off_t start, off_t len)
+{
+#if defined(F_PUNCHHOLE)
+	struct fpunchhole fp;
+
+	bzero(&fp, sizeof(fp));
+	fp.fp_offset = start;
+	fp.fp_length = len;
+	return fcntl(fd, F_PUNCHHOLE, &fp);
+#elif defined(FALLOC_FL_PUNCH_HOLE)
+	return fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, start, len);
+#else
+	errno = ENOTSUP;
+	return -1;
+#endif
+}
+
+void
+dopunchhole(unsigned offset, unsigned size)
+{
+	off_t start, end;
+	int logent;
+
+	/* only whole fs blocks: round the start up and the end down */
+	start = ((off_t)offset + punchbdy - 1) / punchbdy * punchbdy;
+	end = ((off_t)offset + size) / punchbdy * punchbdy;
+	if (end > file_size)
+		end = file_size / punchbdy * punchbdy;
+	if (end <= start) {
+		if (debug && testcalls > simulatedopcount)
+		{
+			prt("skipping zero size punch hole\n");
+		}
+		log4(OP_SKIPPED, OP_PUNCHHOLE, offset, size);
+		return;
+	}
+
+	logent = log4(OP_PUNCHHOLE, (unsigned)start, (unsigned)(end - start), (unsigned)file_size);
+
+	memset(good_buf + start, '\0', end - start);
+
+	if (SHOWLOGENTRY(start, end))
+	{
+		logentrydump(logent, logcount);
+	}
+
+	if (testcalls <= simulatedopcount)
+		return;
+
+	if (interactive) {
+		printf("Hit return when ready...");
+		getchar();
+	}
+
+	if (punch_range(start, end - start) == -1) {
+		logdump();
+		prt("punchhole: 0x%llx thru 0x%llx\n", (unsigned long long)start, (unsigned long long)end);
+		prterr("dopunchhole: punch hole");
+		failure(190);
+	}
+}
+
+
 void
 writefileimage(void)
 {
@@ -1290,6 +1437,13 @@ test(void)
 	 * TRUNCATE:	op = 3
 	 * MAPWRITE:    op = 3 or 4
 	 */
+	if (punchholes && file_size && random() % 8 == 0) {
+		offset = random() % file_size;
+		size = random() % (maxoplen+1);
+		dopunchhole(offset, size);
+		goto done;
+	}
+
 	if (lite ? 0 : op == 3 && style == 0 && ea == 0) /* vanilla truncate? */
 		dotruncate(((random() + datasize - 1) & ~(datasize - 1)) % maxfilelen);
 	else {
@@ -1329,6 +1483,7 @@ test(void)
 			}
 		}
 	}
+done:
 	if (sizechecks && testcalls > simulatedopcount)
 		check_size();
 	if (closeopen)
@@ -1357,7 +1512,7 @@ void
 usage(void)
 {
 	fprintf(stdout, "usage: %s",
-		"fsx [-ehinqvxCLMORW] [-b opnum] [-c Prob] [-d duration] [-f forkname] [-l logpath] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-F flen] [-G logsize] [-I opnum] [-N numops] [-P dirpath] [-S seed] [-T datasize] fname [xxxxx]\n\
+		"fsx [-ehinqvxCHLMORW] [-b opnum] [-c Prob] [-d duration] [-f forkname] [-l logpath] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-F flen] [-G logsize] [-I opnum] [-N numops] [-P dirpath] [-S seed] [-T datasize] fname [xxxxx]\n\
 	-b opnum: beginning operation number (default 1)\n\
 	-c P: 1 in P chance of file close+open at each op (default infinity)\n\
 	-d duration: number of hours for the tool to run\n\
@@ -1383,6 +1538,7 @@ usage(void)
 	-D startingop: debug output starting at specified operation\n\
 	-G logsize: #entries in oplog (default 1024)\n\
 	-F flen: the upper bound on file size (default 262144)\n\
+	-H: punch holes (deallocate random block-aligned ranges; not with -e, -L, -h)\n\
 	-I: start interactive mode since operation opnum\n\
 	-L: fsxLite - no file creations & no file size changes\n\
 	-M: slow motion mode, wait 1 second before each op\n\
@@ -1454,7 +1610,7 @@ main(int argc, char **argv)
 
 	setvbuf(stdout, (char *)0, _IOLBF, 0); /* line buffered stdout */
 
-	while ((ch = getopt_long(argc, argv, "b:c:d:ef:g:hil:m:no:p:qr:s:t:vw:xCD:F:G:I:LMN:OP:RS:T:W", NULL, NULL))
+	while ((ch = getopt_long(argc, argv, "b:c:d:ef:g:hil:m:no:p:qr:s:t:vw:xCD:F:G:HI:LMN:OP:RS:T:W", NULL, NULL))
 	       != EOF)
 		switch (ch) {
 		case 'b':
@@ -1579,6 +1735,9 @@ main(int argc, char **argv)
 			maxfilelen = getnum(optarg, &endp);
 			if (maxfilelen <= 0)
 				usage();
+			break;
+		case 'H':
+			punchholes = 1;
 			break;
 		case 'I':
 			interactiveSince = getnum(optarg, &endp);
@@ -1725,6 +1884,11 @@ main(int argc, char **argv)
 		exit(99);
 	}
 
+	if (punchholes && (ea || lite || !usehole)) {
+		fprintf(stderr, "-H: not compatible with -e, -L or -h\n");
+		exit(94);
+	}
+
 	if (seed == 0)
 		seed = (time(NULL) + getpid()) | 1;
 	initstate(seed, state, 256);
@@ -1733,6 +1897,49 @@ main(int argc, char **argv)
 	if (fd < 0) {
 		prterr(fname);
 		exit(91);
+	}
+	if (punchholes) {
+#if !defined(F_PUNCHHOLE) && !defined(FALLOC_FL_PUNCH_HOLE)
+		fprintf(stderr, "-H: punching holes is not supported on this platform\n");
+		usage();
+#endif
+#ifdef __APPLE__
+		/* F_PUNCHHOLE needs allocation-block alignment, which f_bsize is on APFS/HFS+ */
+		struct statfs sfs;
+		if (fstatfs(fd, &sfs) == -1 || sfs.f_bsize <= 0) {
+			prterr("fstatfs");
+			exit(93);
+		}
+		punchbdy = sfs.f_bsize;
+#else
+		/*
+		 * fallocate() takes any alignment.  f_bsize is only the preferred
+		 * I/O size (up to 1MB on NFS/FUSE), so use a fixed granularity.
+		 */
+		punchbdy = page_size;
+#endif
+		/*
+		 * maxfilelen is final here: only -L resizes it from the file, and
+		 * -L is rejected above.  Without -L the file was just truncated.
+		 */
+		if (punchbdy * 2 > maxfilelen) {
+			fprintf(stderr, "-H: -F %lu is too small to punch %d byte blocks\n",
+			    maxfilelen, punchbdy);
+			exit(94);
+		}
+		/*
+		 * Probe once so an unsupported filesystem is reported as such
+		 * instead of as a data-integrity failure on the first punch.
+		 */
+		if (ftruncate(fd, punchbdy) == -1 || punch_range(0, punchbdy) == -1) {
+			fprintf(stderr, "-H: hole punching is not supported on this filesystem: %s\n",
+			    strerror(errno));
+			exit(94);
+		}
+		if (ftruncate(fd, 0) == -1) {
+			prterr("-H: ftruncate after probe");
+			exit(94);
+		}
 	}
 	fsxgoodfd = open(goodfile, O_RDWR|O_CREAT|O_TRUNC, 0666);
 	if (fsxgoodfd < 0) {
