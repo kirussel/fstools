@@ -22,7 +22,7 @@
 #
 
 ifeq ($(shell uname -s),Darwin)
-ARCHS ?= ppc i386 x86_64
+ARCHS ?= x86_64
 endif
 INTERNAL_FRAMEWORKS := /AppleInternal/Library/Frameworks
 CFLAGS := $(ARCHS:%=-arch %) -Wall -O3
