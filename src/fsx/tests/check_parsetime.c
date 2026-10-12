@@ -110,11 +110,13 @@ END_TEST
 
 START_TEST(test_overflow)
 {
-	/* Values past INT_MAX are clamped to INT_MAX rather than wrapping. */
+	/* Values outside the int range are clamped rather than wrapping. */
 	ck_assert_int_eq(parsetime("99999999999"), INT_MAX);
 	ck_assert_int_eq(parsetime("99999999999s"), INT_MAX);
 	ck_assert_int_eq(parsetime("100y"), INT_MAX);
 	ck_assert_int_eq(parsetime("68y1h"), 68 * 31536000 + 3600);
+	ck_assert_int_eq(parsetime("-99999999999"), INT_MIN);
+	ck_assert_int_eq(parsetime("-99999999999s"), INT_MIN);
 }
 END_TEST
 

@@ -55,7 +55,7 @@ parsetime(const char *t)
 	const char *t_orig = t;
 	const char *num = t; /* start of the current number */
 	long long secs = 0; /* clamped to INT_MIN..INT_MAX, so never overflows */
-	long val;
+	long long val;
 
 	for (; *t; t++) {
 		size_t u;
@@ -63,12 +63,13 @@ parsetime(const char *t)
 			if (units[u].c == *t) {
 				/* like atoi(): leading sign, stop at "." etc. */
 				val = clamp(strtol(num, NULL, 10));
-				secs = clamp(secs + (long long)val * units[u].mult);
+				secs = clamp(secs + val * units[u].mult);
 				num = t + 1;
 				break;
 			}
 	}
 	if (secs)
 		return (int)secs;
-	return (int)clamp(strtol(t_orig, NULL, 10)); /* keep the "bare number" fallback */
+	/* keep the "bare number" fallback */
+	return (int)clamp(strtol(t_orig, NULL, 10));
 }
