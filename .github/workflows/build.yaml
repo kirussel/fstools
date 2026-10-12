@@ -40,3 +40,4 @@ jobs:
           cd "$RUNNER_TEMP"
           "$fsx" -q -N 10000 -S 1 fsx-smoke
           "$fsx" -q -H -N 10000 -S 1 fsx-smoke-holes
+          "$fsx" -q -A -N 10000 -S 1 fsx-smoke-falloc

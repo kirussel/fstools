@@ -44,6 +44,8 @@
  *
  *	Added punch-hole option (-H).
  *
+ *	Added fallocate/preallocate option (-A).
+ *
  * Compile with:
  	cc -Wall -O3 fsx.c parsetime.c -o fsx
  	gcc -arch ppc -arch i386 -arch ppc64 -arch x86_64 -Wall -O3 fsx.c parsetime.c -o fsx -DXILOG -F/AppleInternal/Library/Frameworks -framework XILog
@@ -173,6 +175,8 @@ int logcount = 0; /* total ops */
 #define OP_NOCACHEREAD	8
 #define OP_NOCACHEWRITE 9
 #define OP_PUNCHHOLE	10
+#define OP_FALLOC	11
+#define OP_FALLOC_KEEP	12
 
 int page_size;
 int page_mask;
@@ -232,6 +236,7 @@ XILogRef xilogref;
 #endif
 int gUseRandomNoCache = 0; /* -C randomly mix cached and un-cached r/w ops */
 int punchholes = 0; /* -H flag */
+int preallocate = 0; /* -A flag */
 int punchbdy = 0; /* fs block size, set once the file is open */
 
 char *msgbuf;
@@ -239,6 +244,7 @@ int msgbuflen;
 
 void dotruncate(unsigned size);
 void dopunchhole(unsigned offset, unsigned size);
+void doprealloc(unsigned offset, unsigned size, int keep_size);
 void writefileimage(void);
 
 #define get_data_at(cp) \
@@ -509,6 +515,20 @@ logentrydump(int logent, int opnum)
 		    lp->args[1], lp->args[1]);
 		if ((badoff >= lp->args[0]) && (badoff < lp->args[0] + lp->args[1])) {
 			prt("\t***PPPP");
+		}
+		break;
+	case OP_FALLOC:
+	case OP_FALLOC_KEEP:
+		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)",
+		    lp->operation == OP_FALLOC ? "FALLOC" : "FALLOC KEEP_SIZE",
+		    lp->args[0], lp->args[0],
+		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
+		    lp->args[1], lp->args[1]);
+		if (lp->operation == OP_FALLOC && lp->args[0] + lp->args[1] > lp->args[2])
+			prt(" EXTEND");
+		if ((badoff >= lp->args[0] || badoff >= lp->args[2]) &&
+		    badoff < lp->args[0] + lp->args[1]) {
+			prt("\t***AAAA");
 		}
 		break;
 	case OP_TRUNCATE:
@@ -1265,6 +1285,80 @@ dopunchhole(unsigned offset, unsigned size)
 }
 
 
+/*
+ * Preallocate [start, start + len).  With keep_size the file size never
+ * changes; otherwise the file grows if the range extends past EOF.
+ * Returns 0, or -1 with errno set.
+ */
+static int
+prealloc_range(off_t start, off_t len, int keep_size)
+{
+#if defined(FALLOC_FL_KEEP_SIZE)
+	return fallocate(fd, keep_size ? FALLOC_FL_KEEP_SIZE : 0, start, len);
+#else
+	(void)start;
+	(void)len;
+	(void)keep_size;
+	errno = ENOTSUP;
+	return -1;
+#endif
+}
+
+void
+doprealloc(unsigned offset, unsigned size, int keep_size)
+{
+	off_t end = (off_t)offset + size;
+	unsigned oldsize = file_size;
+	int op = keep_size ? OP_FALLOC_KEEP : OP_FALLOC;
+	int logent;
+
+	if (end > (off_t)maxfilelen)
+		end = maxfilelen;
+	end &= ~(off_t)(datasize - 1);
+	if (end <= (off_t)offset) {
+		if (debug && testcalls > simulatedopcount) {
+			prt("skipping zero size fallocate\n");
+		}
+		log4(OP_SKIPPED, op, offset, size);
+		return;
+	}
+
+	logent = log4(op, offset, (unsigned)(end - offset), oldsize);
+
+	/* allocation never changes data; only a size extension shows up as zeros */
+	if (!keep_size && end > file_size) {
+		memset(good_buf + file_size, '\0', end - file_size);
+		file_size = end;
+		if (file_size > biggest) {
+			biggest = file_size;
+			if (!quiet && testcalls > simulatedopcount) {
+				prt("fallocating to largest ever: 0x%llx\n", (unsigned long long)end);
+			}
+		}
+	}
+
+	if (SHOWLOGENTRY(offset, end)) {
+		logentrydump(logent, logcount);
+	}
+
+	if (testcalls <= simulatedopcount)
+		return;
+
+	if (interactive) {
+		printf("Hit return when ready...");
+		getchar();
+	}
+
+	if (prealloc_range(offset, end - offset, keep_size) == -1) {
+		logdump();
+		prt("fallocate: 0x%x thru 0x%llx%s\n", offset, (unsigned long long)end,
+		    keep_size ? " (KEEP_SIZE)" : "");
+		prterr("doprealloc: fallocate");
+		failure(192);
+	}
+}
+
+
 void
 writefileimage(void)
 {
@@ -1367,6 +1461,14 @@ test(void)
 		goto done;
 	}
 
+	if (preallocate && random() % 8 == 0) {
+		offset = random() % (maxfilelen ? maxfilelen : 1);
+		offset &= ~(datasize - 1);
+		size = random() % (maxoplen + 1);
+		doprealloc(offset, size, random() % 2);
+		goto done;
+	}
+
 	if (lite ? 0 : op == 3 && style == 0 && ea == 0) /* vanilla truncate? */
 		dotruncate(((random() + datasize - 1) & ~(datasize - 1)) % maxfilelen);
 	else {
@@ -1433,7 +1535,8 @@ void
 usage(void)
 {
 	fprintf(stdout, "usage: %s",
-		"fsx [-ehinqvxCHLMORW] [-b opnum] [-c Prob] [-d duration] [-f forkname] [-l logpath] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-F flen] [-G logsize] [-I opnum] [-N numops] [-P dirpath] [-S seed] [-T datasize] fname [xxxxx]\n\
+		"fsx [-ehinqvxACHLMORW] [-b opnum] [-c Prob] [-d duration] [-f forkname] [-l logpath] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-F flen] [-G logsize] [-I opnum] [-N numops] [-P dirpath] [-S seed] [-T datasize] fname [xxxxx]\n\
+	-A: fallocate: preallocate random ranges, with or without FALLOC_FL_KEEP_SIZE (not with -e, -L)\n\
 	-b opnum: beginning operation number (default 1)\n\
 	-c P: 1 in P chance of file close+open at each op (default infinity)\n\
 	-d duration: number of hours for the tool to run\n\
@@ -1536,7 +1639,7 @@ main(int argc, char **argv)
 
 	setvbuf(stdout, (char *)0, _IOLBF, 0); /* line buffered stdout */
 
-	while ((ch = getopt_long(argc, argv, "b:c:d:ef:g:hil:m:no:p:qr:s:t:vw:xCD:F:G:HI:LMN:OP:RS:T:W", NULL, NULL)) != EOF)
+	while ((ch = getopt_long(argc, argv, "b:c:d:ef:g:hil:m:no:p:qr:s:t:vw:xACD:F:G:HI:LMN:OP:RS:T:W", NULL, NULL)) != EOF)
 		switch (ch) {
 		case 'b':
 			simulatedopcount = getnum(optarg, &endp);
@@ -1664,6 +1767,9 @@ main(int argc, char **argv)
 			maxfilelen = getnum(optarg, &endp);
 			if (maxfilelen <= 0)
 				usage();
+			break;
+		case 'A':
+			preallocate = 1;
 			break;
 		case 'H':
 			punchholes = 1;
@@ -1819,6 +1925,11 @@ main(int argc, char **argv)
 		exit(94);
 	}
 
+	if (preallocate && (ea || lite)) {
+		fprintf(stderr, "-A: not compatible with -e or -L\n");
+		exit(94);
+	}
+
 	if (seed == 0)
 		seed = (time(NULL) + getpid()) | 1;
 	initstate(seed, state, 256);
@@ -1870,6 +1981,23 @@ main(int argc, char **argv)
 			prterr("-H: ftruncate after probe");
 			exit(94);
 		}
+	}
+	if (preallocate) {
+#if !defined(FALLOC_FL_KEEP_SIZE)
+		fprintf(stderr, "-A: fallocate is not supported on this platform\n");
+		usage();
+#else
+		/* Probe both modes so an unsupported filesystem isn't reported as corruption. */
+		if (prealloc_range(0, page_size, 1) == -1 || prealloc_range(0, page_size, 0) == -1) {
+			fprintf(stderr, "-A: fallocate is not supported on this filesystem: %s\n",
+				strerror(errno));
+			exit(94);
+		}
+		if (ftruncate(fd, 0) == -1) {
+			prterr("-A: ftruncate after probe");
+			exit(94);
+		}
+#endif
 	}
 	fsxgoodfd = open(goodfile, O_RDWR | O_CREAT | O_TRUNC, 0666);
 	if (fsxgoodfd < 0) {
