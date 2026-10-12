@@ -19,8 +19,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Check
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install check pkgconf
+          else
+            sudo apt-get update
+            sudo apt-get install -y check pkg-config
+          fi
+
       - name: Build
         run: make
+
+      - name: Unit tests
+        run: make check
 
       - name: Smoke test
         run: |
