@@ -27,6 +27,7 @@
  */
 
 #include <check.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -99,6 +100,16 @@ START_TEST(test_negative_falls_back_to_atoi)
 }
 END_TEST
 
+START_TEST(test_overflow)
+{
+	/* Values past INT_MAX are clamped to INT_MAX rather than wrapping. */
+	ck_assert_int_eq(parsetime("99999999999"), INT_MAX);
+	ck_assert_int_eq(parsetime("99999999999s"), INT_MAX);
+	ck_assert_int_eq(parsetime("100y"), INT_MAX);
+	ck_assert_int_eq(parsetime("68y1h"), 68 * 31536000 + 3600);
+}
+END_TEST
+
 START_TEST(test_long_input)
 {
 	/* A long argument must not overflow any fixed-size buffer. */
@@ -124,6 +135,7 @@ parsetime_suite(void)
 	tcase_add_test(tc, test_trailing_number_without_unit);
 	tcase_add_test(tc, test_zero_and_empty);
 	tcase_add_test(tc, test_negative_falls_back_to_atoi);
+	tcase_add_test(tc, test_overflow);
 	tcase_add_test(tc, test_long_input);
 	suite_add_tcase(s, tc);
 	return s;

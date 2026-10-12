@@ -23,6 +23,7 @@
  */
 
 #include <ctype.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdlib.h>
 
@@ -43,20 +44,34 @@ parsetime(const char *t)
 		{ 'y', 31536000 },
 	};
 	const char *t_orig = t;
-	int secs = 0, val = 0;
+	long long secs = 0, val = 0; /* clamped to INT_MAX, so never overflow */
+	long bare;
 
 	for (; *t; t++) {
 		size_t u;
 		if (isdigit((unsigned char)*t)) {
 			val = val * 10 + (*t - '0');
+			if (val > INT_MAX)
+				val = INT_MAX;
 			continue;
 		}
 		for (u = 0; u < sizeof(units) / sizeof(units[0]); u++)
 			if (units[u].c == *t) {
 				secs += val * units[u].mult;
+				if (secs > INT_MAX)
+					secs = INT_MAX;
 				val = 0;
 				break;
 			}
 	}
-	return secs ? secs : atoi(t_orig); /* keep the "bare number" fallback */
+	if (secs)
+		return (int)secs;
+
+	/* keep the "bare number" fallback, clamped like the rest */
+	bare = strtol(t_orig, NULL, 10);
+	if (bare > INT_MAX)
+		return INT_MAX;
+	if (bare < INT_MIN)
+		return INT_MIN;
+	return (int)bare;
 }
