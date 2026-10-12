@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  fsx:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: src/fsx
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      - name: Smoke test
+        run: |
+          fsx="$PWD/fsx"
+          cd "$RUNNER_TEMP"
+          "$fsx" -q -N 10000 -S 1 fsx-smoke
+          "$fsx" -q -H -N 10000 -S 1 fsx-smoke-holes
