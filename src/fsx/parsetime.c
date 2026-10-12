@@ -21,6 +21,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -34,43 +35,35 @@ parsetime(char *t)
 	int secs = 0;
 	char b[128];
 	bzero(b, 128);
-	size_t n = 0; /* digits collected in b */
 
 	for (i = 0; i < strlen(t); i++) {
 		switch (t[i]) {
 		case 's':
 			secs += atoi(b);
 			bzero(b, 128);
-			n = 0;
 			break;
 		case 'm':
 			secs += atoi(b) * 60;
 			bzero(b, 128);
-			n = 0;
 			break;
 		case 'h':
 			secs += atoi(b) * 60 * 60;
 			bzero(b, 128);
-			n = 0;
 			break;
 		case 'd':
 			secs += atoi(b) * 60 * 60 * 24;
 			bzero(b, 128);
-			n = 0;
 			break;
 		case 'w':
 			secs += atoi(b) * 60 * 60 * 24 * 7;
 			bzero(b, 128);
-			n = 0;
 			break;
 		case 'y':
 			secs += atoi(b) * 60 * 60 * 24 * 365;
 			bzero(b, 128);
-			n = 0;
 			break;
 		default:
-			if (n < sizeof(b) - 1)
-				b[n++] = t[i];
+			sprintf(b, "%s%c", b, t[i]);
 		}
 	}
 	if (secs == 0) // maybe they just gave us a number?
