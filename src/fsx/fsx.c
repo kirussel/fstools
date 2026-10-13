@@ -1309,6 +1309,10 @@ prealloc_range(off_t start, off_t len, int keep_size)
 	 * what lies past the current EOF (F_ALLOCATEALL: all or nothing; the
 	 * kernel may allocate more than asked, which isn't observable here),
 	 * and for the default mode extend the size afterwards.
+	 *
+	 * Note F_ALLOCATEALL can report success on some filesystems (e.g.
+	 * network mounts) without really allocating; fsx only sees size and
+	 * data, so -A on macOS can't tell whether blocks were allocated.
 	 */
 	struct stat sb;
 	fstore_t fst;
@@ -1317,13 +1321,20 @@ prealloc_range(off_t start, off_t len, int keep_size)
 	if (fstat(fd, &sb) == -1)
 		return -1;
 	if (end > sb.st_size) {
-		bzero(&fst, sizeof(fst));
-		fst.fst_flags = F_ALLOCATEALL;
-		fst.fst_posmode = F_PEOFPOSMODE;
-		fst.fst_offset = 0;
-		fst.fst_length = end - sb.st_size;
-		if (fcntl(fd, F_PREALLOCATE, &fst) == -1)
-			return -1;
+		/*
+		 * The physical EOF includes earlier preallocation that st_size
+		 * doesn't, so skip the call once enough is already allocated
+		 * rather than piling up space on repeated KEEP_SIZE calls.
+		 */
+		if ((off_t)sb.st_blocks * 512 < end) {
+			bzero(&fst, sizeof(fst));
+			fst.fst_flags = F_ALLOCATEALL;
+			fst.fst_posmode = F_PEOFPOSMODE;
+			fst.fst_offset = 0;
+			fst.fst_length = end - sb.st_size;
+			if (fcntl(fd, F_PREALLOCATE, &fst) == -1)
+				return -1;
+		}
 		if (!keep_size && ftruncate(fd, end) == -1)
 			return -1;
 	}
@@ -1384,9 +1395,9 @@ doprealloc(unsigned offset, unsigned size, int keep_size)
 
 	if (prealloc_range(offset, end - offset, keep_size) == -1) {
 		logdump();
-		prt("fallocate: 0x%x thru 0x%llx%s\n", offset, (unsigned long long)end,
+		prt("preallocate: 0x%x thru 0x%llx%s\n", offset, (unsigned long long)end,
 		    keep_size ? " (KEEP_SIZE)" : "");
-		prterr("doprealloc: fallocate");
+		prterr("doprealloc: preallocate");
 		failure(192);
 	}
 }
@@ -1495,7 +1506,7 @@ test(void)
 	}
 
 	if (preallocate && random() % 8 == 0) {
-		offset = random() % (maxfilelen ? maxfilelen : 1);
+		offset = random() % maxfilelen;
 		offset &= ~(datasize - 1);
 		size = random() % (maxoplen + 1);
 		doprealloc(offset, size, random() % 2);
@@ -1569,7 +1580,7 @@ usage(void)
 {
 	fprintf(stdout, "usage: %s",
 		"fsx [-ehinqvxACHLMORW] [-b opnum] [-c Prob] [-d duration] [-f forkname] [-l logpath] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-F flen] [-G logsize] [-I opnum] [-N numops] [-P dirpath] [-S seed] [-T datasize] fname [xxxxx]\n\
-	-A: fallocate: preallocate random ranges, with or without FALLOC_FL_KEEP_SIZE (not with -e, -L)\n\
+	-A: preallocate random ranges (fallocate on Linux, F_PREALLOCATE on macOS), keeping the size or extending it (not with -e, -L)\n\
 	-b opnum: beginning operation number (default 1)\n\
 	-c P: 1 in P chance of file close+open at each op (default infinity)\n\
 	-d duration: number of hours for the tool to run\n\
@@ -2020,7 +2031,11 @@ main(int argc, char **argv)
 		fprintf(stderr, "-A: preallocation is not supported on this platform\n");
 		usage();
 #else
-		/* Probe both modes so an unsupported filesystem isn't reported as corruption. */
+		/*
+		 * Probe both modes so an unsupported filesystem isn't reported as
+		 * corruption.  The probe can leave the file extended (always on
+		 * macOS), hence the ftruncate back to 0 below.
+		 */
 		if (prealloc_range(0, page_size, 1) == -1 || prealloc_range(0, page_size, 0) == -1) {
 			fprintf(stderr, "-A: preallocation is not supported on this filesystem: %s\n",
 				strerror(errno));
