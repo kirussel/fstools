@@ -408,6 +408,13 @@ offset_last_mod(int offset, int *write, int *tdown, int *tup)
 			if ((offset >= lp->args[0]) && (offset < (lp->args[0] + lp->args[1])))
 				*write = opnum;
 			break;
+		case OP_FALLOC:
+			/* only the part past the old EOF changes (it reads as zeros) */
+			if (*write != -1)
+				break;
+			if ((offset >= lp->args[2]) && (offset >= lp->args[0]) && (offset < (lp->args[0] + lp->args[1])))
+				*write = opnum;
+			break;
 		case OP_TRUNCATE:
 			down = lp->args[0] < lp->args[1];
 			if ((offset >= lp->args[!down]) && (offset < lp->args[!!down])) {
@@ -520,7 +527,7 @@ logentrydump(int logent, int opnum)
 	case OP_FALLOC:
 	case OP_FALLOC_KEEP:
 		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)",
-		    lp->operation == OP_FALLOC ? "FALLOC" : "FALLOC KEEP_SIZE",
+		    lp->operation == OP_FALLOC ? "FALLOC" : "FALLOC KEEP",
 		    lp->args[0], lp->args[0],
 		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
 		    lp->args[1], lp->args[1]);
